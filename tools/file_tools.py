@@ -1715,6 +1715,19 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             cross_warning = _check_cross_profile_path(_p, task_id)
             if cross_warning:
                 return tool_error(cross_warning)
+    # Same display-format guard write_file_tool applies to ``content``:
+    # replace-mode ``new_string`` is what lands on disk verbatim. The fuzzy
+    # matcher's similarity strategies will happily match a ``N|``-prefixed
+    # old_string against the clean file (the prefix is a tiny fraction of
+    # the line), so an echoed-display patch call succeeds end-to-end and
+    # silently corrupts the file — the write side must reject it.
+    if mode == "replace" and isinstance(new_string, str) and \
+            _is_internal_file_tool_content(new_string):
+        return tool_error(
+            "Refusing to write internal read_file display text as file "
+            "content. new_string looks like echoed read_file output — strip "
+            "the line-number prefixes and pass the file's real content."
+        )
     try:
         # Resolve paths for locking.  Ordered + deduplicated so concurrent
         # callers lock in the same order — prevents deadlock on overlapping

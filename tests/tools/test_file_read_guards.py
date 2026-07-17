@@ -17,6 +17,7 @@ from unittest.mock import patch, MagicMock
 from tools.file_tools import (
     read_file_tool,
     write_file_tool,
+    patch_tool,
     reset_file_dedup,
     _is_blocked_device,
     _invalidate_dedup_for_path,
@@ -508,6 +509,129 @@ class TestFileDedup(unittest.TestCase):
 
         r2 = json.loads(read_file_tool(self._tmpfile, task_id="task_b"))
         self.assertNotEqual(r2.get("dedup"), True)
+
+
+# ---------------------------------------------------------------------------
+# patch (replace mode) rejects echoed read_file display text
+# ---------------------------------------------------------------------------
+
+class TestPatchRejectsDisplayText(unittest.TestCase):
+    """patch_tool's replace-mode ``new_string`` lands on disk verbatim, so it
+    must run the same display-format guard as write_file's ``content``.
+
+    Observed corruption shape: the model reads a file (getting ``N|content``
+    display lines), then calls patch with BOTH old_string and new_string in
+    that display format.  The fuzzy matcher's similarity strategies match the
+    prefixed old_string against the clean file, and the prefixed new_string
+    was written verbatim — every line corrupted with ``N|``.
+    """
+
+    def setUp(self):
+        _read_tracker.clear()
+        self._tmpdir = _make_safe_tempdir("hermes-patch-guard-")
+        self._tmpfile = os.path.join(self._tmpdir, "patch_guard.md")
+        with open(self._tmpfile, "w", encoding="utf-8") as f:
+            f.write("Dates use the format `YYYY.MM.DD`.\n\nDaily notes nest by year then month.\n")
+
+    def tearDown(self):
+        _read_tracker.clear()
+        try:
+            os.unlink(self._tmpfile)
+            os.rmdir(self._tmpdir)
+        except OSError:
+            pass
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_replace_rejects_line_numbered_new_string(self, mock_ops):
+        """Echoed read_file display in new_string is rejected before any I/O."""
+        fake = MagicMock()
+        mock_ops.return_value = fake
+
+        numbered = (
+            "1|Dates use the format `YYYY.MM.DD`.\n"
+            "2|Times use the format `HH:MM:SS` in 24-hour UTC.\n"
+            "3|Daily notes nest by year then month.\n"
+            "4|All timestamps are UTC.\n"
+            "5|"
+        )
+        result = json.loads(patch_tool(
+            mode="replace",
+            path=self._tmpfile,
+            old_string="Dates use the format `YYYY.MM.DD`.",
+            new_string=numbered,
+            task_id="patch_guard",
+        ))
+
+        self.assertIn("error", result)
+        self.assertIn("internal read_file display text", result["error"])
+        fake.patch_replace.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_replace_rejects_dedup_status_as_new_string(self, mock_ops):
+        """The internal dedup status message is display text too, not content."""
+        fake = MagicMock()
+        mock_ops.return_value = fake
+
+        result = json.loads(patch_tool(
+            mode="replace",
+            path=self._tmpfile,
+            old_string="Dates use the format `YYYY.MM.DD`.",
+            new_string=_READ_DEDUP_STATUS_MESSAGE,
+            task_id="patch_guard",
+        ))
+
+        self.assertIn("error", result)
+        self.assertIn("internal read_file display text", result["error"])
+        fake.patch_replace.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_replace_allows_sparse_pipe_content(self, mock_ops):
+        """Legitimate pipe-delimited content (non-dominant, non-consecutive)
+        must still patch fine — the guard keys on read_file's consecutive
+        numbered-line signature, not on pipes generally."""
+        fake = MagicMock()
+        fake.patch_replace = lambda path, old, new, replace_all: MagicMock(
+            to_dict=lambda: {"success": True, "diff": "stub"}
+        )
+        mock_ops.return_value = fake
+
+        legit = (
+            "# ids\n"
+            "10|alice\n"
+            "42|bob\n"
+            "\n"
+            "Notes about the mapping.\n"
+        )
+        result = json.loads(patch_tool(
+            mode="replace",
+            path=self._tmpfile,
+            old_string="Daily notes nest by year then month.",
+            new_string=legit,
+            task_id="patch_guard",
+        ))
+
+        self.assertNotIn("error", result)
+        self.assertTrue(result.get("success"))
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_replace_allows_plain_new_string(self, mock_ops):
+        """Ordinary prose/code fragments pass through untouched."""
+        fake = MagicMock()
+        fake.patch_replace = lambda path, old, new, replace_all: MagicMock(
+            to_dict=lambda: {"success": True, "diff": "stub"}
+        )
+        mock_ops.return_value = fake
+
+        result = json.loads(patch_tool(
+            mode="replace",
+            path=self._tmpfile,
+            old_string="Dates use the format `YYYY.MM.DD`.",
+            new_string="Dates use the format `YYYY-MM-DD` (ISO 8601).",
+            task_id="patch_guard",
+        ))
+
+        self.assertNotIn("error", result)
+        self.assertTrue(result.get("success"))
 
 
 # ---------------------------------------------------------------------------
