@@ -10820,8 +10820,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # so the user can retry; if it times out, the agent unblocks
             # with an empty response.
             if _raw_clarify_reply and not _raw_clarify_reply.startswith("/"):
+                # Every other user-text ingestion path prepends the same
+                # human-readable [timestamp] prefix when
+                # gateway.message_timestamps.enabled is on (see
+                # _message_timestamps_enabled call sites elsewhere in this
+                # file). This intercept short-circuits straight to the
+                # clarify tool's return value, so without this it was the
+                # one user-text path that reached the model with no
+                # send-time metadata while every surrounding message had
+                # one. render_fn runs *after* resolve_text_response_for_session
+                # coerces the raw reply (numeric "2" / exact-choice-text ->
+                # canonical choice), so a typed choice selection still maps
+                # correctly even with the prefix applied to the result.
+                _clarify_render_fn = None
+                if _message_timestamps_enabled(_load_gateway_config()):
+                    try:
+                        from hermes_time import get_timezone as _get_clarify_tz
+                        from gateway.message_timestamps import (
+                            render_user_content_with_timestamp as _render_clarify_ts,
+                        )
+                        _clarify_evt_ts = getattr(event, "timestamp", None)
+                        _clarify_evt_tz = _get_clarify_tz()
+                        _clarify_render_fn = lambda _text: _render_clarify_ts(
+                            _text, _clarify_evt_ts, tz=_clarify_evt_tz,
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Failed to prepare clarify reply timestamp render",
+                            exc_info=True,
+                        )
                 _resolved = _clarify_mod.resolve_text_response_for_session(
-                    _quick_key, _raw_clarify_reply,
+                    _quick_key, _raw_clarify_reply, render_fn=_clarify_render_fn,
                 )
                 if _resolved:
                     logger.info(

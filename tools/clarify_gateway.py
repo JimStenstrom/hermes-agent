@@ -241,11 +241,24 @@ def _coerce_text_response(entry: _ClarifyEntry, response: str) -> Optional[str]:
     return None
 
 
-def resolve_text_response_for_session(session_key: str, response: str) -> bool:
+def resolve_text_response_for_session(
+    session_key: str,
+    response: str,
+    *,
+    render_fn: Optional[Callable[[str], str]] = None,
+) -> bool:
     """Resolve the oldest pending clarify in ``session_key`` from typed text.
 
     Returns False if no pending clarify exists or if the response was rejected
     (arbitrary prose for native interactive multi-choice clarifies).
+
+    ``render_fn``, if given, post-processes the coerced response (e.g. to
+    prepend a gateway timestamp prefix) *after* choice-number/choice-text
+    coercion but before it reaches the waiting agent thread. Coercion must
+    run on the raw typed text first -- a numeric ("2") or exact-choice-text
+    reply has to map onto the canonical choice string; running ``render_fn``
+    first would decorate the raw text and break that matching. A ``render_fn``
+    failure is non-fatal: the coerced text is used unchanged.
     """
     entry = get_pending_for_session(session_key, include_choice_prompts=True)
     if entry is None:
@@ -256,10 +269,14 @@ def resolve_text_response_for_session(session_key: str, response: str) -> bool:
         # Response rejected: message should continue as a normal turn
         return False
 
-    return resolve_gateway_clarify(
-        entry.clarify_id,
-        coerced,
-    )
+    if render_fn is not None:
+        try:
+            coerced = render_fn(coerced) or coerced
+        except Exception:
+            logger.debug(
+                "resolve_text_response_for_session render_fn failed", exc_info=True,
+            )
+    return resolve_gateway_clarify(entry.clarify_id, coerced)
 
 
 def mark_awaiting_text(clarify_id: str) -> bool:

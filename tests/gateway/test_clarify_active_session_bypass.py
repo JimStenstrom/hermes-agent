@@ -88,6 +88,118 @@ async def test_active_session_routes_typed_choice_clarify_reply_to_runner_not_bu
 
 
 @pytest.mark.asyncio
+async def test_gateway_clarify_reply_gets_timestamp_prefix_when_enabled():
+    """The clarify text-intercept must timestamp replies like every other
+    user-text ingestion path when gateway.message_timestamps.enabled is on.
+
+    Every other user-text path (main inbound message, replayed history)
+    prepends a ``[timestamp]`` prefix via render_user_content_with_timestamp
+    when the toggle is on. The clarify text-intercept resolves the reply
+    directly into the clarify tool's return value without going through that
+    path, so it silently dropped the prefix (#issue: clarify replies bypass
+    gateway.message_timestamps).
+    """
+    _clear_clarify_state()
+    from gateway.run import GatewayRunner
+    from tools import clarify_gateway as cm
+
+    adapter = _ClarifyBypassAdapter()
+    event = _event("the missing details")
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._startup_restore_in_progress = False
+    runner._scale_to_zero_note_real_inbound = lambda: None
+    runner._is_user_authorized = lambda source: True
+    runner._session_key_for_source = lambda source: "clarify-ts-session"
+    runner._adapter_for_source = lambda source: adapter
+    runner._update_prompt_pending = {}
+
+    cm.register("clarify-ts-1", "clarify-ts-session", "What is missing?", None)
+
+    with patch("hermes_cli.plugins.invoke_hook", return_value=[]), patch(
+        "gateway.run._load_gateway_config",
+        return_value={"gateway": {"message_timestamps": {"enabled": True}}},
+    ):
+        result = await runner._handle_message(event)
+
+    assert result == ""
+    entry = cm._entries["clarify-ts-1"]
+    assert entry.response.startswith("[")
+    assert entry.response.endswith("the missing details")
+
+
+@pytest.mark.asyncio
+async def test_gateway_clarify_reply_no_timestamp_prefix_when_disabled():
+    """Default (message_timestamps disabled): clarify replies stay unprefixed."""
+    _clear_clarify_state()
+    from gateway.run import GatewayRunner
+    from tools import clarify_gateway as cm
+
+    adapter = _ClarifyBypassAdapter()
+    event = _event("the missing details")
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._startup_restore_in_progress = False
+    runner._scale_to_zero_note_real_inbound = lambda: None
+    runner._is_user_authorized = lambda source: True
+    runner._session_key_for_source = lambda source: "clarify-nots-session"
+    runner._adapter_for_source = lambda source: adapter
+    runner._update_prompt_pending = {}
+
+    cm.register("clarify-nots-1", "clarify-nots-session", "What is missing?", None)
+
+    with patch("hermes_cli.plugins.invoke_hook", return_value=[]), patch(
+        "gateway.run._load_gateway_config", return_value={},
+    ):
+        result = await runner._handle_message(event)
+
+    assert result == ""
+    entry = cm._entries["clarify-nots-1"]
+    assert entry.response == "the missing details"
+
+
+@pytest.mark.asyncio
+async def test_gateway_clarify_choice_reply_still_coerces_with_timestamp_enabled():
+    """Numeric/exact-choice replies must still coerce to the canonical choice
+    text even when the timestamp prefix is applied to the resolved answer.
+
+    The prefix has to be applied AFTER choice coercion, not before -- prefixing
+    the raw "2" before coercion would make it match no choice and fall through
+    as unrelated custom text, silently breaking multi-choice typed replies
+    whenever gateway.message_timestamps.enabled is on.
+    """
+    _clear_clarify_state()
+    from gateway.run import GatewayRunner
+    from tools import clarify_gateway as cm
+
+    adapter = _ClarifyBypassAdapter()
+    event = _event("2")
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._startup_restore_in_progress = False
+    runner._scale_to_zero_note_real_inbound = lambda: None
+    runner._is_user_authorized = lambda source: True
+    runner._session_key_for_source = lambda source: "clarify-choice-session"
+    runner._adapter_for_source = lambda source: adapter
+    runner._update_prompt_pending = {}
+
+    cm.register("clarify-choice-1", "clarify-choice-session", "Pick one", ["A", "B"])
+
+    with patch("hermes_cli.plugins.invoke_hook", return_value=[]), patch(
+        "gateway.run._load_gateway_config",
+        return_value={"gateway": {"message_timestamps": {"enabled": True}}},
+    ):
+        result = await runner._handle_message(event)
+
+    assert result == ""
+    entry = cm._entries["clarify-choice-1"]
+    # Coerced to the canonical choice "B" (not the raw "2"), with the
+    # timestamp prefix applied on top.
+    assert entry.response.startswith("[")
+    assert entry.response.endswith("B")
+
+
+@pytest.mark.asyncio
 async def test_gateway_clarify_reply_resumes_typing_before_returning_empty_ack():
     """A clarify answer must re-enable the active run's typing indicator.
 
