@@ -35,11 +35,14 @@
             install -Dm755 ${../scripts/dev-sandbox.sh} $out/bin/sandbox
           '')
           uv
-          # Headless Wayland compositor for E2E tests (test:e2e:visual).
-          # cage renders a single client with no window management, so
-          # the Electron window opens at a fixed size without tiling.
-          # libglvnd provides libEGL.so.1 that cage needs on NixOS.
-          cage
+        ]
+        # libglvnd provides the libEGL.so.1 that cage needs on NixOS, for the
+        # headless-compositor E2E tests (test:e2e:visual).  cage itself comes
+        # in via devDeps below, already behind the same guard.  Linux-only:
+        # these have no darwin platform support, and an unguarded reference
+        # makes the whole shell fail to *evaluate* there, not just fail to
+        # build.
+        ++ lib.optionals stdenv.isLinux [
           libglvnd
           # Graphical terminal + Wayland screenshot client for CLI/TUI UI
           # evidence. `cage -- ghostty ...` keeps captures off the user's
