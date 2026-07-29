@@ -35,6 +35,11 @@
             install -Dm755 ${../scripts/dev-sandbox.sh} $out/bin/sandbox
           '')
           uv
+        ]
+        # Wayland-only tooling for visual E2E captures; Linux-gated like
+        # the cage devDep in hermes-agent.nix, and evaluating any of these
+        # on darwin aborts the whole dev shell.
+        ++ lib.optionals stdenv.isLinux [
           # Headless Wayland compositor for E2E tests (test:e2e:visual).
           # cage renders a single client with no window management, so
           # the Electron window opens at a fixed size without tiling.
